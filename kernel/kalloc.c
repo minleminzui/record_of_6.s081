@@ -11,6 +11,7 @@
 
 void freerange(void *pa_start, void *pa_end);
 
+
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
@@ -71,7 +72,7 @@ kalloc(void)
   struct run *r;
 
   acquire(&kmem.lock);
-  r = kmem.freelist;
+  r = kmem.freelist;//分配出去了，就不用管他的next属性了，所以可以fill with junk
   if(r)
     kmem.freelist = r->next;
   release(&kmem.lock);
@@ -79,4 +80,19 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+uint64 
+free_mem(void){
+  struct run *r;
+  uint64 count = 0;
+  r = kmem.freelist;
+  acquire(&kmem.lock);
+  while(r){
+    ++count;
+    r = r->next;
+  }
+  release(&kmem.lock);
+
+  return count * PGSIZE;
 }

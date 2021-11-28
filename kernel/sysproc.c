@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -94,4 +95,32 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  int mask;
+  if(argint(0, &mask) < 0)
+    return -1;
+
+  myproc()->mask = mask;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  struct sysinfo sinfo;
+  struct proc *p = myproc();//陷入内核任旧是当前进程
+  uint64 addr;
+  if(argaddr(0, &addr) < 0){
+    return -1;
+  }
+  sinfo.freemem = free_mem();//没有头文件为什么可以跳转
+  sinfo.nproc = nproc();
+  if(copyout(p->pagetable, addr, (char*)&sinfo, sizeof(sinfo)) < 0){
+    return -1;
+  } 
+  return 0;
 }
