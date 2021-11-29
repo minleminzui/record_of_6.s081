@@ -19,6 +19,7 @@ extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
+
 extern char trampoline[]; // trampoline.S
 
 // initialize the proc table at boot time.
@@ -295,7 +296,10 @@ fork(void)
 
   np->state = RUNNABLE;
 
+  // np->mask = p->mask;
   release(&np->lock);
+
+
 
   return pid;
 }
@@ -483,14 +487,10 @@ scheduler(void)
       }
       release(&p->lock);
     }
-#if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
       asm volatile("wfi");
     }
-#else
-    ;
-#endif
   }
 }
 
@@ -696,4 +696,19 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+uint64
+nproc(void){
+  // struct proc *p;
+  uint64 count = 0;
+  for(int i = 0 ; i < NPROC; ++i){
+    acquire(&(proc[i]).lock);
+    if(proc[i].state != UNUSED){
+      ++count;
+    }
+    release(&(proc[i]).lock);
+  }
+  return count;
 }
