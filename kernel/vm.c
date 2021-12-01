@@ -6,6 +6,9 @@
 #include "defs.h"
 #include "fs.h"
 
+#include "spinlock.h"
+#include "proc.h"//myproc()把一个struct proc 返回，这里需要这个结构体定义
+
 /*
  * the kernel's page table.
  */
@@ -47,6 +50,48 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+pagetable_t //给进程创建新的内核页表
+kuvminit(){
+  pagetable_t kpagetable = (pagetable_t) kalloc();
+  memset(kpagetable, 0, PGSIZE);
+  kuvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  kuvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  kuvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  kuvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  kuvmmap(kpagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  kuvmmap(kpagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  kuvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  return kpagetable;
+}
+void//给用户进程的地址直接映射
+kuvmmap(pagetable_t kpagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(kpagetable, va, sz, pa, perm) != 0)
+    panic("kuvmmap");
+}
+// void 
+// uvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+// {
+//   if(mappages(pagetable, va, sz, pa, perm) != 0)
+//     panic("kvmmap");
+// }
+// pagetable_t
+// proc_kpt_init()
+// {
+//   pagetable_t kpt;
+//   kpt = (pagetable_t) kalloc();
+//   if(kpt == 0)
+//     return 0;
+//   memset(kpt, 0, PGSIZE);
+//   uvmmap(kpt, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+//   uvmmap(kpt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+//   uvmmap(kpt, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+//   uvmmap(kpt, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+//   uvmmap(kpt, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+//   uvmmap(kpt, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+//   uvmmap(kpt, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+//   return kpt;
+// }
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
@@ -128,11 +173,12 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 uint64
 kvmpa(uint64 va)
 {
-  uint64 off = va % PGSIZE;
+  uint64 off = va % PGSIZE;//这里的作用是什么,offset页内偏移
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  // pte = walk(myproc()->kpagetable, va, 0);//这里进程需要依靠自己的内核页表去转换va至pa
+  pte = walk(myproc()->kpagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -234,7 +280,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   if(newsz < oldsz)
     return oldsz;
 
-  oldsz = PGROUNDUP(oldsz);
+  oldsz = PGROUNDUP(oldsz);//向上取整？实际上还是扩充了足够页数的内存
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
@@ -281,7 +327,7 @@ freewalk(pagetable_t pagetable)
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
-      pagetable[i] = 0;
+      // pagetable[i] = 0;
     } else if(pte & PTE_V){
       panic("freewalk: leaf");
     }
@@ -379,23 +425,24 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  // uint64 n, va0, pa0;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -405,40 +452,41 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  return copyinstr_new(pagetable, dst, srcva, max);
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
 }
 
 void printfLevel(pagetable_t pagetable, int level){
@@ -462,4 +510,25 @@ vmprint(pagetable_t pagetable)
 {
   printf("page table %p\n", pagetable);
   printfLevel(pagetable, 1);
+}
+
+void 
+u2kvmcopy(pagetable_t pagetable, pagetable_t kpagetable, uint64 oldsz, uint64 newsz)
+{
+  
+  if(oldsz > newsz)
+    return;
+  oldsz = PGROUNDUP(oldsz);//这里的向上取整是要迎合uvmalloc中oldsz的向上取整
+  pte_t *from, *to;
+  for(uint64 i = oldsz; i < newsz; i += PGSIZE){
+    if((from = walk(pagetable, i, 0)) == 0)
+      panic("u2kvmcopy from: wrong!!!");
+    if((to = walk(kpagetable, i, 1)) == 0)
+      panic("u2kvmcopy to: wrong!!!");
+    // uint64 flags = (PTE_FLAGS(*from)) & (~PTE_U);
+    // *to = (*from) | flags;
+    uint64 pa = PTE2PA(*from);
+    uint flag = (PTE_FLAGS(*from)) & (~PTE_U);
+    *to = PA2PTE(pa) | flag;//这里需要pte2pa再pa2pte因为需要与没有设置PTE_U的flag做或
+  }
 }

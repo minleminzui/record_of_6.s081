@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -35,12 +36,12 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();//这里真的会分配kernel text identity-mapping 吗？
+      // if(pa == 0)         //会的，因为end(也就是kalloc分配内存起始地址)就等于0x80000000，可以见kernel.ld
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
   kvminithart();
 }
@@ -122,6 +123,32 @@ found:
     return 0;
   }
 
+  p->kpagetable = kuvminit();//进程内核页表初始化
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  // p->kernelpt = proc_kpt_init();
+  // if (p->kernelpt == 0){
+  //   freeproc(p);
+  //   release(&p->lock);
+  //   return 0;
+  // }
+  // char *pa = kalloc();
+  // if(pa == 0)
+  //   panic("kalloc");
+  // uint64 va = KSTACK(0);
+  // // 添加kernel stack的映射到用户的kernel pagetable里
+  // uvmmap(p->kernelpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  // p->kstack = va;
+  char *pa = kalloc();
+  if(pa == 0)         
+    panic("kalloc");
+  uint64 va = KSTACK(0);//这里给每一个进程分配的内核栈va都在一个位置，因为页表不同，所以没关系，不过要记得kfree pa的内核栈
+  kuvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -130,7 +157,43 @@ found:
 
   return p;
 }
-
+void
+proc_freewalk(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){//这里释放内核页表，不需要去管叶子pa
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      proc_freewalk((pagetable_t)child);
+      pagetable[i] = 0;//这里为什么要设置零鸭
+    }
+    //   else if(pte & PTE_V){
+    //   panic("freewalk: leaf");
+    // }
+  }
+  kfree((void*)pagetable);
+}
+// void 
+// proc_freekpt(pagetable_t pagetable)
+// {
+//   // there are 2^9 = 512 PTEs in a page table.
+//   for(int i = 0; i < 512; i++){
+//     pte_t pte = pagetable[i];
+//     if((pte & PTE_V)){
+//       pagetable[i] = 0;
+//       if ((pte & (PTE_R|PTE_W|PTE_X)) == 0)
+//       {
+//         uint64 child = PTE2PA(pte);
+//         proc_freekpt((pagetable_t)child);
+//       }
+//     } else if(pte & PTE_V){
+//       panic("proc free kpt: leaf");
+//     }
+//   }
+//   kfree((void*)pagetable);
+// }
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -140,6 +203,21 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  if(p->kstack){//释放内核栈对应的pa
+    pte_t *pte = walk(p->kpagetable, p->kstack, 0);
+    if(pte == 0)
+      panic("freeproc wrong!!!");
+    kfree((void*)PTE2PA(*pte));
+  }
+  p->kstack = 0;
+
+  if(p->kpagetable){
+    proc_freewalk(p->kpagetable);
+  }
+  // p->kpagetable = 0;
+  
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -151,6 +229,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
 }
 
 // Create a user page table for a given process,
@@ -221,6 +300,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  u2kvmcopy(p->pagetable, p->kpagetable, 0, p->sz);//复制到内核页表
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -231,6 +311,7 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  // u2kvmcopy(p->pagetable, p->kpagetable, 0, p->sz);//复制到内核页表
   release(&p->lock);
 }
 
@@ -244,13 +325,17 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if(PGROUNDUP(sz + n) >= PLIC) return -1;
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    // u2kvmcopy(p->pagetable, p->kpagetable, sz - n, sz);//复制到内核页表
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  u2kvmcopy(p->pagetable, p->kpagetable, sz - n, sz);//复制到内核页表
   p->sz = sz;
+  
   return 0;
 }
 
@@ -290,11 +375,15 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // u2kvmcopy(np->pagetable, np->kpagetable, 0, np->sz);//复制到内核页表
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  u2kvmcopy(np->pagetable, np->kpagetable, 0, np->sz);//复制到内核页表
 
   // np->mask = p->mask;
   release(&np->lock);
@@ -477,8 +566,15 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        w_satp(MAKE_SATP(p->kpagetable));//切换内核页表为进程自己的内核页表
+        sfence_vma();
+        // w_satp(MAKE_SATP(p->kernelpt));
+        // sfence_vma();
+
         swtch(&c->context, &p->context);
 
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
@@ -489,6 +585,7 @@ scheduler(void)
     }
     if(found == 0) {
       intr_on();
+      
       asm volatile("wfi");
     }
   }
